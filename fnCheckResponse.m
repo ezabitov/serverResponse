@@ -1,9 +1,21 @@
+/*
+     Функция проверяет есть ли в вашем аккаунте Яндекс.Директ ссылки на несуществующие страницы.
+
+     Версия 1.1
+     -- добавлена возможность поиска по активным и не активным объявлениям
+
+
+     Создатель: Эльдар Забитов (http://zabitov.ru)
+*/
+
+
 let
-checkResponse = (token as text, clientlogin as nullable text) =>
+checkResponse = (token as text, clientlogin as nullable text, findAll as nullable text) =>
 let
 
     // вводные
     clientLogin = if clientlogin = null then "" else clientlogin,
+    findAll = if findAll = "YES" then "" else ", ""States"": [""ON""]"
     auth = "Bearer "&token,
 
     // получаем список кампаний в аккаунте и формируем таблицу
@@ -33,9 +45,9 @@ let
                         ""params"":
                             {""SelectionCriteria"":
                                 {
-                                    ""CampaignIds"": ["""&campaignsId&"""],
-                                    ""States"": [""ON""]
-                                },
+                                    ""CampaignIds"": ["""&campaignsId&"""]"&findAll&
+
+                                "},
                                 ""FieldNames"": [""Id"", ""State"", ""CampaignId""],
                                 ""TextAdFieldNames"": [""Href""],
                                 ""TextImageAdFieldNames"": [""Href""]
@@ -80,7 +92,7 @@ let
 
     // формируем итоговую таблицу
     addResponseToTable = Table.AddColumn(campaignIdToText, "Custom", each fnCampaignServerResponse([Id])),
-    expandFinal = Table.ExpandTableColumn(addResponseToTable, "Custom", {"Status", "Id", "Href", "HrefClean", "Response.Status"}, {"AdStatus", "AdId", "Href", "HrefClean", "Response.Status"}),
+    expandFinal = Table.ExpandTableColumn(addResponseToTable, "Custom", {"Id", "Href", "HrefClean", "Response.Status"}, {"AdId", "Href", "HrefClean", "Response.Status"}),
     renameCampaignId = Table.RenameColumns(expandFinal,{{"Id", "CampaignId"}}),
 
     // удаляем объявления с пустым полем ссылок и статусом не 200
