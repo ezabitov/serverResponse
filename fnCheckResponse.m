@@ -15,7 +15,7 @@ let
 
     // вводные
     clientLogin = if clientlogin = null then "" else clientlogin,
-    findAll = if findAll = "YES" then "" else ", ""States"": [""ON""]"
+    findAll = if findAll = "YES" then "" else ", ""States"": [""ON""]",
     auth = "Bearer "&token,
 
     // получаем список кампаний в аккаунте и формируем таблицу
