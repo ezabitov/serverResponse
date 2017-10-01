@@ -1,8 +1,9 @@
 /*
      Функция проверяет есть ли в вашем аккаунте Яндекс.Директ ссылки на несуществующие страницы.
 
-     Версия 1.1
-     -- добавлена возможность поиска по активным и не активным объявлениям
+     Версия 2.0
+     -- теперь по умолчанию проверяются все ссылки и показывается статус объявлений
+     -- проверка идет и по быстрым ссылкам тоже
 
 
      Создатель: Эльдар Забитов (http://zabitov.ru)
@@ -10,8 +11,51 @@
 
 
 let
-checkResponse = (token as text, clientlogin as nullable text, findAll as nullable text) =>
+checkResponse = (token as text, clientlogin as nullable text) =>
 let
+
+//Достаём Быстрые ссылки
+fnSitelinkUrl = (sitelinkSetId as text) =>
+let
+    sitelinkUrl = "https://api.direct.yandex.com/json/v5/sitelinks",
+    sitelinkBody = "{""method"":
+                ""get"",
+                    ""params"":
+                        {""SelectionCriteria"":
+                            {
+                                ""Ids"": ["""&sitelinkSetId&"""]
+
+                            },
+                        ""FieldNames"": [""Id"", ""Sitelinks""]
+                            }
+                }",
+    sourceSitelinks = Web.Contents(sitelinkUrl,
+    [Headers = [#"Authorization"=auth,
+                #"Accept-Language" = "ru",
+                #"Content-Type" = "application/json; charset=utf-8",
+                #"Client-Login" = clientLogin],
+    Content = Text.ToBinary(sitelinkBody) ]),
+    sitelinksJson = Json.Document(sourceSitelinks,65001),
+    sitelinksJsonToTable = Record.ToTable(sitelinksJson),
+    sitelinksExpand = Table.ExpandRecordColumn(sitelinksJsonToTable, "Value", {"SitelinksSets"}, {"Value.SitelinksSets"}),
+    sitelinksExpand1 = Table.ExpandListColumn(sitelinksExpand, "Value.SitelinksSets"),
+    sitelinksExpand2 = Table.ExpandRecordColumn(sitelinksExpand1, "Value.SitelinksSets", {"Sitelinks"}, {"Value.SitelinksSets.Sitelinks"}),
+    sitelinksExpand3 = Table.ExpandListColumn(sitelinksExpand2, "Value.SitelinksSets.Sitelinks"),
+    sitelinksExpand4 = Table.ExpandRecordColumn(sitelinksExpand3, "Value.SitelinksSets.Sitelinks", {"Href"}, {"Value.SitelinksSets.Sitelinks.Href"}),
+    sitelinksDelOther = Table.SelectColumns(sitelinksExpand4,{"Value.SitelinksSets.Sitelinks.Href"}),
+    sitelinksRenameCol = Table.RenameColumns(sitelinksDelOther,{{"Value.SitelinksSets.Sitelinks.Href", "SitelinkHref"}})
+in
+    sitelinksRenameCol,
+
+
+
+    // функция получения статусов сервера
+fnServerResponse = (urlList as text) =>
+let
+    Source = Web.Contents(urlList,[ManualStatusHandling={404}]),
+    GetMetadata = Value.Metadata(Source)
+in
+    GetMetadata,
 
     // вводные
     clientLogin = if clientlogin = null then "" else clientlogin,
@@ -45,11 +89,10 @@ let
                         ""params"":
                             {""SelectionCriteria"":
                                 {
-                                    ""CampaignIds"": ["""&campaignsId&"""]"&findAll&
-
-                                "},
+                                    ""CampaignIds"": ["""&campaignsId&"""]
+                                },
                                 ""FieldNames"": [""Id"", ""State"", ""CampaignId""],
-                                ""TextAdFieldNames"": [""Href""],
+                                ""TextAdFieldNames"": [""Href"", ""SitelinkSetId""],
                                 ""TextImageAdFieldNames"": [""Href""]
                                 }
                     }",
@@ -59,46 +102,52 @@ let
                         #"Content-Type" = "application/json; charset=utf-8",
                         #"Client-Login" = clientLogin],
             Content = Text.ToBinary(bodyAds) ]),
-        jsonListAds = Json.Document(getAds,65001),
-        jsonToTableAds = Record.ToTable(jsonListAds),
-        expandValueAds = Table.ExpandRecordColumn(jsonToTableAds, "Value", {"Ads"}, {"Ads"}),
-        expandAds = Table.ExpandListColumn(expandValueAds, "Ads"),
-        expandAds1 = Table.ExpandRecordColumn(expandAds, "Ads", {"Id", "TextAd", "Status", "CampaignId"}, {"Id", "TextAd", "Status", "CampaignId"}),
-        expandHref = Table.ExpandRecordColumn(expandAds1, "TextAd", {"Href"}, {"Href"}),
-        duplicateHref = Table.DuplicateColumn(expandHref, "Href", "HrefClean1"),
-        deleteUtm = Table.SplitColumn(duplicateHref,"HrefClean1",Splitter.SplitTextByDelimiter("?", QuoteStyle.Csv),{"HrefClean"}),
-        deleteHttps = Table.ReplaceValue(deleteUtm,"https://","",Replacer.ReplaceText,{"HrefClean"}),
-        deleteHttp = Table.ReplaceValue(deleteHttps,"http://","",Replacer.ReplaceText,{"HrefClean"}),
-        deleteAnotherColumns = Table.SelectColumns(deleteHttp,{"HrefClean"}),
+            jsonListAds = Json.Document(getAds,65001),
+            jsonToTableAds = Record.ToTable(jsonListAds),
+            expandValueAds = Table.ExpandRecordColumn(jsonToTableAds, "Value", {"Ads"}, {"Ads"}),
+            expandAds = Table.ExpandListColumn(expandValueAds, "Ads"),
+            expandAds1 = Table.ExpandRecordColumn(expandAds, "Ads", {"Id", "TextAd", "State", "CampaignId"}, {"Id", "TextAd", "State", "CampaignId"}),
+            expandHrefLinks = Table.ExpandRecordColumn(expandAds1, "TextAd", {"Href", "SitelinkSetId"}, {"Href", "SitelinkSetId"}),
+            sitelinkSetIdToText = Table.TransformColumnTypes(expandHrefLinks,{{"SitelinkSetId", type text}}),
 
-        // удаляем дубли чтоб уменьшить нагрузку
-        distinctHref = Table.Distinct(deleteAnotherColumns),
+            duplicateHref = Table.DuplicateColumn(sitelinkSetIdToText, "Href", "HrefClean1"),
+            deleteUtm = Table.SplitColumn(duplicateHref,"HrefClean1",Splitter.SplitTextByDelimiter("?", QuoteStyle.Csv),{"HrefClean"}),
+            deleteHttps = Table.ReplaceValue(deleteUtm,"https://","",Replacer.ReplaceText,{"HrefClean"}),
+            deleteHttp = Table.ReplaceValue(deleteHttps,"http://","",Replacer.ReplaceText,{"HrefClean"}),
+            deleteColExHref = Table.SelectColumns(deleteHttp,{"HrefClean"}),
+            distinctHref = Table.Distinct(deleteColExHref),
+            hrefDelNull = Table.SelectRows(distinctHref, each [HrefClean] <> null),
+            hrefFnToTable = Table.AddColumn(hrefDelNull, "Custom", each fnServerResponse([HrefClean])),
+            expandHrefResponseStatus = Table.ExpandRecordColumn(hrefFnToTable, "Custom", {"Response.Status"}, {"Response.Status"}),
 
-        // функция получения статусов сервера
-        fnServerResponse = (urlList as text) =>
-        let
-            Source = Web.Contents(urlList,[ManualStatusHandling={404}]),
-            GetMetadata = Value.Metadata(Source)
-        in
-            GetMetadata,
+            deleteColExSitelinks = Table.SelectColumns(deleteHttp,{"SitelinkSetId"}),
+            distinctSitelinks = Table.Distinct(deleteColExSitelinks),
+            sitelinksDelNull = Table.SelectRows(distinctSitelinks, each [SitelinkSetId] <> null),
+            sitelinksFnToTable = Table.AddColumn(sitelinksDelNull, "Custom", each fnSitelinkUrl([SitelinkSetId])),
+            expandSitelinks = Table.ExpandTableColumn(sitelinksFnToTable, "Custom", {"SitelinkHref"}, {"SitelinkHref"}),
+            expandSitelinksResponse = Table.AddColumn(expandSitelinks, "Пользовательская", each fnServerResponse([Custom.SitelinkHref])),
+            expandSitelinksResponse1 = Table.ExpandRecordColumn(expandSitelinksResponse, "Пользовательская", {"Response.Status"}, {"Response.Sitelinks"}),
+            // запускаем функцию и мерджим статусы URL с списком всех объявлений
+            mergeSitelinks = Table.NestedJoin(deleteHttp,{"SitelinkSetId"},expandSitelinksResponse1,{"SitelinkSetId"},"mergeSitelinks",JoinKind.LeftOuter),
+            mergeHref = Table.NestedJoin(mergeSitelinks,{"HrefClean"},expandHrefResponseStatus,{"HrefClean"},"mergeHref",JoinKind.LeftOuter),
+            expandMergeSitelinks = Table.ExpandTableColumn(mergeHref, "mergeSitelinks", {"SitelinkHref", "Response.Sitelinks"}, {"Custom.SitelinkHref", "Response.Sitelinks"}),
+            expandMergeHref = Table.ExpandTableColumn(expandMergeSitelinks, "mergeHref", {"Response.Status"}, {"Response.Status"})
 
-        // запускаем функцию и мерджим статусы URL с списком всех объявлений
-        getFnToTable = Table.AddColumn(distinctHref, "Custom", each fnServerResponse([HrefClean])),
-        expandResponseStatus = Table.ExpandRecordColumn(getFnToTable, "Custom", {"Response.Status"}, {"Response.Status"}),
-        mergeToAllCampaign = Table.NestedJoin(deleteHttp,{"HrefClean"},expandResponseStatus,{"HrefClean"},"NewColumn",JoinKind.LeftOuter),
-        expandeResponseStatus = Table.ExpandTableColumn(mergeToAllCampaign, "NewColumn", {"Response.Status"}, {"Response.Status"})
     in
-        expandeResponseStatus,
+            expandMergeHref,
 
-    // формируем итоговую таблицу
-    addResponseToTable = Table.AddColumn(campaignIdToText, "Custom", each fnCampaignServerResponse([Id])),
-    expandFinal = Table.ExpandTableColumn(addResponseToTable, "Custom", {"Id", "Href", "HrefClean", "Response.Status"}, {"AdId", "Href", "HrefClean", "Response.Status"}),
-    renameCampaignId = Table.RenameColumns(expandFinal,{{"Id", "CampaignId"}}),
+                fnToTable = Table.AddColumn(campaignIdToText, "Custom", each fnCampaignServerResponse([Id])),
+    #"Развернутый элемент Custom" = Table.ExpandTableColumn(fnToTable, "Custom", {"Name", "Id", "Href", "SitelinkSetId", "State", "CampaignId", "HrefClean", "Custom.SitelinkHref", "Response.Sitelinks", "Response.Status"}, {"Name.1", "AdId", "Href", "SitelinkSetId", "State", "CampaignId", "HrefClean", "SitelinkHref", "Response.Sitelinks", "Response.Status"}),
+        checkProblem = Table.AddColumn(#"Развернутый элемент Custom", "Problem?", each if [SitelinkHref] = null and [Response.Status] = 200 then "No Problem" else
+    if [Response.Sitelinks] = 200 and [Response.Status] = 200 then "No Problem" else "Problem"),
+        filterProblem = Table.SelectRows(checkProblem, each ([#"Problem?"] = "Problem")),
+        finalStep = Table.SelectColumns(filterProblem,{"Name", "AdId", "State", "CampaignId", "HrefClean", "SitelinkHref", "Response.Sitelinks", "Response.Status", "Problem?"})
 
-    // удаляем объявления с пустым полем ссылок и статусом не 200
-    filterEmptyHref = Table.SelectRows(renameCampaignId, each ([Href] <> null)),
-    filterNonTwoHundred = Table.SelectRows(filterEmptyHref, each ([Response.Status] <> 200))
 in
-    filterNonTwoHundred
-in
-    checkResponse
+    finalStep
+
+
+
+    in
+
+checkResponse
