@@ -1,10 +1,11 @@
 /*
      Функция проверяет есть ли в вашем аккаунте Яндекс.Директ ссылки на несуществующие страницы.
 
-     Версия 2.1
+     Версия 2.2
      -- теперь по умолчанию проверяются все ссылки и показывается статус объявлений
      -- проверка идет и по быстрым ссылкам тоже
-     -- поправлено форматирование
+     -- поправлены мелкие баги
+
 
      Создатель: Эльдар Забитов (http://zabitov.ru)
 */
@@ -41,9 +42,12 @@ let
         sitelinksExpand3 = Table.ExpandListColumn(sitelinksExpand2, "Value.SitelinksSets.Sitelinks"),
         sitelinksExpand4 = Table.ExpandRecordColumn(sitelinksExpand3, "Value.SitelinksSets.Sitelinks", {"Href"}, {"Value.SitelinksSets.Sitelinks.Href"}),
         sitelinksDelOther = Table.SelectColumns(sitelinksExpand4,{"Value.SitelinksSets.Sitelinks.Href"}),
-        sitelinksRenameCol = Table.RenameColumns(sitelinksDelOther,{{"Value.SitelinksSets.Sitelinks.Href", "SitelinkHref"}})
+        sitelinksRenameCol = Table.RenameColumns(sitelinksDelOther,{{"Value.SitelinksSets.Sitelinks.Href", "SitelinkHref"}}),
+        delUtmSitelinks = Table.SplitColumn(sitelinksRenameCol, "SitelinkHref", Splitter.SplitTextByDelimiter("?", QuoteStyle.Csv), {"SitelinkHref.1"}),
+        changeSitelinksTypeToText = Table.TransformColumnTypes(delUtmSitelinks,{{"SitelinkHref.1", type text}}),
+        renameSitelinksCol = Table.RenameColumns(changeSitelinksTypeToText,{{"SitelinkHref.1", "SitelinkHref"}})
     in
-        sitelinksRenameCol,
+        renameSitelinksCol,
 
     // Функция получения статусов сервера
     fnServerResponse = (urlList as text) =>
@@ -129,7 +133,7 @@ let
         sitelinksDelNull = Table.SelectRows(distinctSitelinks, each [SitelinkSetId] <> null),
         sitelinksFnToTable = Table.AddColumn(sitelinksDelNull, "Custom", each fnSitelinkUrl([SitelinkSetId])),
         expandSitelinks = Table.ExpandTableColumn(sitelinksFnToTable, "Custom", {"SitelinkHref"}, {"SitelinkHref"}),
-        expandSitelinksResponse = Table.AddColumn(expandSitelinks, "Пользовательская", each fnServerResponse([Custom.SitelinkHref])),
+        expandSitelinksResponse = Table.AddColumn(expandSitelinks, "Пользовательская", each fnServerResponse([SitelinkHref])),
         expandSitelinksResponse1 = Table.ExpandRecordColumn(expandSitelinksResponse, "Пользовательская", {"Response.Status"}, {"Response.Sitelinks"}),
 
             // запускаем функцию и мерджим статусы URL с списком всех объявлений
@@ -137,7 +141,7 @@ let
         mergeHref = Table.NestedJoin(mergeSitelinks,{"HrefClean"},expandHrefResponseStatus,{"HrefClean"},"mergeHref",JoinKind.LeftOuter),
         expandMergeSitelinks = Table.ExpandTableColumn(mergeHref, "mergeSitelinks",
             {"SitelinkHref", "Response.Sitelinks"},
-            {"Custom.SitelinkHref", "Response.Sitelinks"}),
+            {"SitelinkHref", "Response.Sitelinks"}),
         expandMergeHref = Table.ExpandTableColumn(expandMergeSitelinks, "mergeHref", {"Response.Status"}, {"Response.Status"})
 
     in
@@ -145,7 +149,7 @@ let
 
     fnToTable = Table.AddColumn(campaignIdToText, "Custom", each fnCampaignServerResponse([Id])),
     expandFinal = Table.ExpandTableColumn(fnToTable, "Custom",
-        {"Name", "Id", "Href", "SitelinkSetId", "State", "CampaignId", "HrefClean", "Custom.SitelinkHref", "Response.Sitelinks", "Response.Status"},
+        {"Name", "Id", "Href", "SitelinkSetId", "State", "CampaignId", "HrefClean", "SitelinkHref", "Response.Sitelinks", "Response.Status"},
         {"Name.1", "AdId", "Href", "SitelinkSetId", "State", "CampaignId", "HrefClean", "SitelinkHref", "Response.Sitelinks", "Response.Status"}),
     checkProblem = Table.AddColumn(expandFinal, "Problem?", each
         if [SitelinkHref] = null and [Response.Status] = 200
