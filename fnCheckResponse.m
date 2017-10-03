@@ -1,10 +1,9 @@
 /*
      Функция проверяет есть ли в вашем аккаунте Яндекс.Директ ссылки на несуществующие страницы.
 
-     Версия 2.2
-     -- теперь по умолчанию проверяются все ссылки и показывается статус объявлений
-     -- проверка идет и по быстрым ссылкам тоже
-     -- поправлены мелкие баги
+     Версия 2.3
+     -- добавил проверку графических объявлений
+     -- поправил баги
 
 
      Создатель: Эльдар Забитов (http://zabitov.ru)
@@ -12,7 +11,7 @@
 
 
 let
-checkResponse = (token as text, clientlogin as nullable text) =>
+checkResponse = (token as text, clientlogin as nullable text, findAll as nullable text) =>
 let
     // Функция для быстрых ссылок
     fnSitelinkUrl = (sitelinkSetId as text) =>
@@ -61,13 +60,19 @@ let
     clientLogin = if clientlogin = null
         then ""
         else clientlogin,
+    findAll = if findAll = "YES"
+        then ""
+        else ", ""States"": [""ON""]",
     auth = "Bearer "&token,
 
     // получаем список кампаний в аккаунте и формируем таблицу
     url = "https://api.direct.yandex.com/json/v5/campaigns",
     body = "{""method"": ""get"",
             ""params"": {
-                ""SelectionCriteria"": {},
+                ""SelectionCriteria"":
+                    {
+                        ""States"": [""ON""]
+                        },
                 ""FieldNames"": [""Id"", ""Name""]}
         }",
     userIdSource = Web.Contents(url,
@@ -93,7 +98,7 @@ let
                         ""params"":
                             {""SelectionCriteria"":
                                 {
-                                    ""CampaignIds"": ["""&campaignsId&"""]
+                                    ""CampaignIds"": ["""&campaignsId&"""]"&findAll&"
                                 },
                                 ""FieldNames"": [""Id"", ""State"", ""CampaignId""],
                                 ""TextAdFieldNames"": [""Href"", ""SitelinkSetId""],
@@ -111,12 +116,17 @@ let
         expandValueAds = Table.ExpandRecordColumn(jsonToTableAds, "Value", {"Ads"}, {"Ads"}),
         expandAds = Table.ExpandListColumn(expandValueAds, "Ads"),
         expandAds1 = Table.ExpandRecordColumn(expandAds, "Ads",
-            {"Id", "TextAd", "State", "CampaignId"},
-            {"Id", "TextAd", "State", "CampaignId"}),
+            {"Id", "TextAd", "State", "CampaignId", "TextImageAd"},
+            {"Id", "TextAd", "State", "CampaignId", "TextImageAd"}),
         expandHrefLinks = Table.ExpandRecordColumn(expandAds1, "TextAd",
             {"Href", "SitelinkSetId"},
-            {"Href", "SitelinkSetId"}),
-        sitelinkSetIdToText = Table.TransformColumnTypes(expandHrefLinks,{{"SitelinkSetId", type text}}),
+            {"TextHref", "SitelinkSetId"}),
+        expandTextImageHref = Table.ExpandRecordColumn(expandHrefLinks, "TextImageAd", {"Href"}, {"TextImageAd.Href"}),
+        getOneHref = Table.AddColumn(expandTextImageHref, "Href", each if [TextHref] = null
+            then [TextImageAd.Href]
+            else [TextHref]),
+        delAmotherHref = Table.RemoveColumns(getOneHref,{"TextHref", "TextImageAd.Href"}),
+        sitelinkSetIdToText = Table.TransformColumnTypes(delAmotherHref,{{"SitelinkSetId", type text}}),
 
         duplicateHref = Table.DuplicateColumn(sitelinkSetIdToText, "Href", "HrefClean1"),
         deleteUtm = Table.SplitColumn(duplicateHref,"HrefClean1",Splitter.SplitTextByDelimiter("?", QuoteStyle.Csv),{"HrefClean"}),
